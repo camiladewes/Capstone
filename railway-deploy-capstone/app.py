@@ -2,11 +2,19 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import sys
+import os
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///forecasts.db'
+
+# Configuração do banco de dados
+if os.getenv('FLASK_ENV') == 'production':
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://user:password@localhost/dbname')
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///forecasts.db'
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+
 
 class Forecast(db.Model):
     id = db.Column(db.Integer, primary_key=True)
