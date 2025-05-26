@@ -1,9 +1,10 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from pydantic import BaseModel, ValidationError, conint
 from typing import Optional
 import os
+from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
@@ -38,13 +39,16 @@ class PricePrediction(db.Model):
     
     __table_args__ = (db.UniqueConstraint('sku', 'time_key', name='_sku_time_uc'),)
 
+@app.errorhandler(ValidationError)
+def handle_validation_error(e):
+    return make_response(jsonify({"error": str(e)}), 422)
+
 @app.route('/forecast_prices/', methods=['POST'])
 def forecast_prices():
     try:
-        # Validar entrada
         data = ForecastInput(**request.get_json())
     except ValidationError as e:
-        return jsonify({"error": str(e)}), 422
+        raise e  # Será capturado pelo errorhandler acima
     
     # Modelo dummy - na prática você substituiria por seu modelo real
     # Aqui estamos apenas gerando valores fictícios baseados no sku e time_key
@@ -83,10 +87,9 @@ def forecast_prices():
 @app.route('/actual_prices/', methods=['POST'])
 def actual_prices():
     try:
-        # Validar entrada
         data = ActualPriceInput(**request.get_json())
     except ValidationError as e:
-        return jsonify({"error": str(e)}), 422
+        raise e  # Será capturado pelo errorhandler acima
     
     # Buscar previsão existente
     prediction = PricePrediction.query.filter_by(sku=data.sku, time_key=data.time_key).first()
