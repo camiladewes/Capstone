@@ -1,134 +1,162 @@
 from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
-import sys
-import os
+from peewee import SqliteDatabase, Model, CharField, IntegerField, DoubleField
+from playhouse.shortcuts import model_to_dict
+import lightgbm as lgb
+import pandas as pd
+import pickle
+import holidays
+from datetime import datetime, timedelta
+import numpy as np
 
+# Configuração inicial
 app = Flask(__name__)
+db = SqliteDatabase('price_predictions.db')
+pt_holidays = holidays.Portugal()
 
-# Configuração do banco de dados
-if os.getenv('FLASK_ENV') == 'production':
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://user:password@localhost/dbname')
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///forecasts.db'
+# Carregar modelos e features
+modelA = lgb.Booster(model_file='modelA.txt')
+modelB = lgb.Booster(model_file='modelB.txt')
 
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+with open('features_A.pkl', 'rb') as f:
+    features_A = pickle.load(f)
+    
+with open('features_B.pkl', 'rb') as f:
+    features_B = pickle.load(f)
 
+# Modelo de banco de dados para previsões
+class PricePrediction(Model):
+    sku = CharField()
+    time_key = IntegerField()
+    pvp_is_competitorA = DoubleField(null=True)
+    pvp_is_competitorB = DoubleField(null=True)
+    pvp_is_competitorA_actual = DoubleField(null=True)
+    pvp_is_competitorB_actual = DoubleField(null=True)
+    created_at = IntegerField(default=lambda: int(datetime.now().timestamp()))
+    
+    class Meta:
+        database = db
+        indexes = (
+            (('sku', 'time_key'), True),
+        )
 
-class Forecast(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    sku = db.Column(db.String(50), nullable=False)
-    time_key = db.Column(db.Integer, nullable=False)
-    pvp_is_competitorA = db.Column(db.Float)
-    pvp_is_competitorB = db.Column(db.Float)
-    pvp_is_competitorA_actual = db.Column(db.Float)
-    pvp_is_competitorB_actual = db.Column(db.Float)
+db.create_tables([PricePrediction], safe=True)
 
-    __table_args__ = (
-        db.UniqueConstraint('sku', 'time_key', name='_sku_time_uc'),
-    )
+# Funções auxiliares para feature engineering
+def get_historical_data(sku, time_key, days_back=30):
+    """Busca dados históricos do SKU"""
+    # Implemente a conexão com seu banco de dados histórico aqui
+    # Retornar DataFrame com colunas: time_key, pvp_was, competitor_prices, etc.
+    # Exemplo simplificado:
+    return pd.DataFrame({
+        'time_key': [time_key - timedelta(days=i) for i in range(days_back, 0, -1)],
+        'pvp_was': np.random.rand(days_back) * 100  # Dummy data
+    })
 
-with app.app_context():
-    db.create_all()
-
-def validate_forecast_input(data):
-    if not isinstance(data.get('sku'), str) or not isinstance(data.get('time_key'), int):
-        return False
-    return True
-
-def validate_actual_input(data):
-    required_fields = ['sku', 'time_key', 'pvp_is_competitorA_actual', 'pvp_is_competitorB_actual']
-    if not all(isinstance(data.get(field), (int, float)) if 'actual' in field else isinstance(data.get(field), (str, int)) for field in required_fields):
-        return False
-    return True
+def calculate_features(sku, time_key, competitor):
+    """Calcula todas as features necessárias"""
+    # Converter time_key para datetime
+    current_date = datetime.strptime(str(time_key), '%Y%m%d')
+    
+    # Buscar dados históricos
+    hist_data = get_historical_data(sku, current_date)
+    
+    # Calcular features temporais
+    features = {
+        'sku': sku,
+        'time_key': time_key,
+        'day_of_month': current_date.day,
+        'day_of_week': current_date.weekday(),
+        'month': current_date.month,
+        'holiday_flag': int(current_date in pt_holidays)
+    }
+    
+    # Calcular lags e médias móveis
+    for lag in [7, 14, 30]:
+        features[f'lag_{lag}'] = hist_data['pvp_was'].iloc[-lag] if len(hist_data) >= lag else np.nan
+    
+    for window in [1, 7, 14, 30]:
+        features[f'rolling_mean_{window}'] = hist_data['pvp_was'].tail(window).mean()
+    
+    # Adicionar outras features conforme seu pipeline
+    # ...
+    
+    return pd.DataFrame([features], columns=features_A if competitor == 'A' else features_B)
 
 @app.route('/forecast_prices/', methods=['POST'])
 def forecast_prices():
-    data = request.get_json()
-    
-    if not validate_forecast_input(data):
-        return jsonify({"error": "Invalid input format"}), 422
-
-    # Dummy prediction model (replace with actual model)
-    dummy_prediction = {
-        'pvp_is_competitorA': 100.0,  # Replace with real prediction logic
-        'pvp_is_competitorB': 150.0    # Replace with real prediction logic
-    }
-
-    # Store/update forecast in database
-    forecast = Forecast.query.filter_by(sku=data['sku'], time_key=data['time_key']).first()
-    if not forecast:
-        forecast = Forecast(
-            sku=data['sku'],
-            time_key=data['time_key'],
-            **dummy_prediction
-        )
-        db.session.add(forecast)
-    else:
-        forecast.pvp_is_competitorA = dummy_prediction['pvp_is_competitorA']
-        forecast.pvp_is_competitorB = dummy_prediction['pvp_is_competitorB']
-    
     try:
-        db.session.commit()
+        data = request.get_json()
+        
+        # Validação
+        if 'sku' not in data or 'time_key' not in data:
+            return jsonify({'error': 'Missing required fields'}), 422
+            
+        sku = str(data['sku'])
+        time_key = int(data['time_key'])
+        
+        # Verificar se já existe previsão
+        try:
+            existing = PricePrediction.get(
+                (PricePrediction.sku == sku) & 
+                (PricePrediction.time_key == time_key))
+            return jsonify({
+                'sku': sku,
+                'time_key': time_key,
+                'pvp_is_competitorA': existing.pvp_is_competitorA,
+                'pvp_is_competitorB': existing.pvp_is_competitorB
+            })
+        except PricePrediction.DoesNotExist:
+            # Gerar features
+            df_A = calculate_features(sku, time_key, 'A')
+            df_B = calculate_features(sku, time_key, 'B')
+            
+            # Fazer previsões
+            pred_A = float(modelA.predict(df_A)[0])
+            pred_B = float(modelB.predict(df_B)[0])
+            
+            # Armazenar previsão
+            PricePrediction.create(
+                sku=sku,
+                time_key=time_key,
+                pvp_is_competitorA=pred_A,
+                pvp_is_competitorB=pred_B
+            )
+            
+            return jsonify({
+                'sku': sku,
+                'time_key': time_key,
+                'pvp_is_competitorA': pred_A,
+                'pvp_is_competitorB': pred_B
+            })
+            
     except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": str(e)}), 500
-
-    return jsonify({
-        'sku': data['sku'],
-        'time_key': data['time_key'],
-        'pvp_is_competitorA': dummy_prediction['pvp_is_competitorA'],
-        'pvp_is_competitorB': dummy_prediction['pvp_is_competitorB']
-    })
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/actual_prices/', methods=['POST'])
 def actual_prices():
-    data = request.get_json()
-    
-    if not validate_actual_input(data):
-        return jsonify({"error": "Invalid input format"}), 422
-
-    forecast = Forecast.query.filter_by(
-        sku=data['sku'],
-        time_key=data['time_key']
-    ).first()
-
-    if not forecast:
-        return jsonify({"error": "No forecast exists for this SKU and date"}), 422
-
-    # Update actual prices
-    forecast.pvp_is_competitorA_actual = data['pvp_is_competitorA_actual']
-    forecast.pvp_is_competitorB_actual = data['pvp_is_competitorB_actual']
-    
     try:
-        db.session.commit()
+        data = request.get_json()
+        
+        # Validação
+        required_fields = ['sku', 'time_key', 'pvp_is_competitorA_actual', 'pvp_is_competitorB_actual']
+        if not all(f in data for f in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 422
+            
+        # Atualizar registro
+        record = PricePrediction.get(
+            (PricePrediction.sku == data['sku']) & 
+            (PricePrediction.time_key == data['time_key']))
+        
+        record.pvp_is_competitorA_actual = float(data['pvp_is_competitorA_actual'])
+        record.pvp_is_competitorB_actual = float(data['pvp_is_competitorB_actual'])
+        record.save()
+        
+        return jsonify(model_to_dict(record))
+        
+    except PricePrediction.DoesNotExist:
+        return jsonify({'error': 'Prediction not found'}), 404
     except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": str(e)}), 500
-
-    return jsonify({
-        'sku': forecast.sku,
-        'time_key': forecast.time_key,
-        'pvp_is_competitorA': forecast.pvp_is_competitorA,
-        'pvp_is_competitorB': forecast.pvp_is_competitorB,
-        'pvp_is_competitorA_actual': forecast.pvp_is_competitorA_actual,
-        'pvp_is_competitorB_actual': forecast.pvp_is_competitorB_actual
-    })
-
-
-@app.route('/view_database/', methods=['GET'])
-def view_database():
-    forecasts = Forecast.query.all()
-    return jsonify([{
-        'id': f.id,
-        'sku': f.sku,
-        'time_key': f.time_key,
-        'pvp_is_competitorA': f.pvp_is_competitorA,
-        'pvp_is_competitorB': f.pvp_is_competitorB,
-        'pvp_is_competitorA_actual': f.pvp_is_competitorA_actual,
-        'pvp_is_competitorB_actual': f.pvp_is_competitorB_actual
-    } for f in forecasts])
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
