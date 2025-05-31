@@ -37,13 +37,13 @@ with open("original_dtypes_B.pkl", "rb") as f:
     original_dtypes_B = pickle.load(f)
 
 # Carrega dados históricos uma vez
-product_prices = pd.read_csv("data/product_prices.csv")
+product_prices = pd.read_csv("data/product_prices_leaflets.csv")
 product_prices['time_key'] = pd.to_datetime(product_prices['time_key'])
 product_prices['sku'] = product_prices['sku'].astype(str)
 chain_campaigns = pd.read_csv("data/chain_campaigns.csv")
 chain_campaigns['start_date'] = pd.to_datetime(chain_campaigns['start_date'])
 chain_campaigns['end_date'] = pd.to_datetime(chain_campaigns['end_date'])
-product_structures = pd.read_csv("data/product_structures.csv")
+product_structures = pd.read_csv("data/product_structures_sales.csv")
 product_structures['sku'] = product_structures['sku'].astype(str)
 
 @app.route("/forecast_prices/", methods=["POST"])
