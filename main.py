@@ -1,18 +1,39 @@
 from utils import load_datasets
-from feature_pipeline import *
+from feature_pipeline_with_dask import *
 from modelling import train_lightgbm
 from api_predictor import generate_features_for_api
 import joblib
 import pickle
+!pip install dask[dataframe] --quiet
+import dask.dataframe as dd
+from dask.diagnostics import ProgressBar
+import pandas as pd
+import holidays
+
+chain_campaigns_path = 'Capstone/data/chain_campaigns.csv'
+product_prices_path = 'Capstone/data/product_prices_leaflets.csv'
+product_structures_path = 'Capstone/data/product_structures_sales.csv'
 
 # 1. Load datasets
 product_prices, chain_campaigns, product_structures = load_datasets(
-    "product_prices.csv", "chain_campaigns.csv", "product_structures.csv"
-)
+    product_prices_path, chain_campaigns_path, product_structures_path
+    )
 
 # 2. Create training features for each competitor
-df_A = create_features("competitorA", product_prices, chain_campaigns, product_structures)
-df_B = create_features("competitorB", product_prices, chain_campaigns, product_structures)
+df_A = create_features_dask(
+    competitor="competitorA",
+    product_prices=product_prices,
+    chain_campaigns=chain_campaigns,
+    product_structures=product_structures,
+    npartitions=10  # Ajuste conforme sua memória
+)
+df_B = create_features_dask(
+    competitor="competitorB",
+    product_prices=product_prices,
+    chain_campaigns=chain_campaigns,
+    product_structures=product_structures,
+    npartitions=10  # Ajuste conforme sua memória
+)
 
 # 3. Split features and target variable
 X_A = df_A.drop(columns=['pvp_was', 'time_key', 'sku'])

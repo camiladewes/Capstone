@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import holidays
+from feature_pipeline import *
 
 def generate_features_for_api(sku, target_date, product_prices, chain_campaigns,
                               product_structures, competitor, original_dtypes):
@@ -46,16 +47,23 @@ def generate_features_for_api(sku, target_date, product_prices, chain_campaigns,
     df_all = df_all.sort_values(['sku', 'time_key'])
 
     df_all = add_temporal_features(df_all)
-    df_all = add_product_category(df_all, product_structures)
-    df_all = add_campaign_features(df_all, chain_campaigns, competitor)
+    df_all = add_product_category_optimized(df_all, product_structures)
+    df_all = add_campaign_features(df_all, chain_campaigns)
 
     df_all['leaflet'] = df_all['leaflet'].fillna('unknown')
     df_all = encode_leaflet(df_all)
     df_all = add_time_series_features(df_all)
-    df_all = add_competitor_prices(df_all, product_prices, ['chain', 'competitorA', 'competitorB'])
+    if competitor == 'competitorA':
+        other_competitors = ['competitorB', 'chain']
+    else:
+        other_competitors = ['competitorA', 'chain']
+    df_all = add_competitor_prices(df_all, product_prices, other_competitors)
     df_all = additional_features(df_all, product_prices, current_competitor=competitor)
 
     df_pred = df_all[df_all['time_key'] == target_date].copy()
+    if df_pred.empty:
+        return None
+    
     numeric_cols = df_pred.select_dtypes(include=[np.number]).columns
     df_pred[numeric_cols] = df_pred[numeric_cols].fillna(0)
 
@@ -67,7 +75,7 @@ def generate_features_for_api(sku, target_date, product_prices, chain_campaigns,
     for col, dtype in original_dtypes.items():
         if col in df_pred.columns:
             if isinstance(dtype, pd.CategoricalDtype):
-                df_pred[col] = df_pred[col].astype('category')
+                df_pred[col] = df_pred[col].astype(dtype)
             else:
                 df_pred[col] = df_pred[col].astype(dtype)
 

@@ -1,7 +1,7 @@
 
-chain_campaigns_path = 'Capstone/data/chain_campaigns.csv'
-product_prices_path = 'Capstone/data/product_prices_leaflets.csv'
-product_structures_path = 'Capstone/data/product_structures_sales.csv'
+chain_campaigns_path = './data/chain_campaigns.csv'
+product_prices_path = './data/product_prices_leaflets.csv'
+product_structures_path = './data/product_structures_sales.csv'
 
 def load_datasets(product_prices_path, chain_campaigns_path, product_structures_path):
     import pandas as pd
