@@ -56,7 +56,7 @@ def forecast_prices():
         sku = str(data["sku"])
         time_key = int(data["time_key"])
         # Converter time_key de inteiro (timestamp) para datetime
-        target_date = pd.to_datetime(time_key, origin='unix', unit='D')
+        target_date = pd.to_datetime(str(time_key), format="%Y%m%d")
 
         # Gera features previamente carregados em memória
         X_A = generate_features_for_api(sku, target_date, product_prices, chain_campaigns,
